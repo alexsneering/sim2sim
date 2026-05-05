@@ -23,7 +23,7 @@ target_q = np.tile(leg_pose, 4)
 default_q = np.array([0, 0.9, -1.8] * 4)
 
 last_action = np.zeros(12, dtype=np.float32)
-
+'''
 viewer =  mujoco.viewer.launch_passive(model, data)
 with torch.no_grad():
     while viewer.is_running():
@@ -38,3 +38,23 @@ with torch.no_grad():
         data.ctrl[:] = target_q
         mujoco.mj_step(model, data)
         viewer.sync()
+'''
+decimation = 4
+step_counter = 0
+with mujoco.viewer.launch_passive(model, data) as viewer:
+    with torch.no_grad():
+        while viewer.is_running():
+            if step_counter % decimation == 0:
+                command = np.array([0.0, 0.0, 0.0])
+                obs = go.get_obs(data, model, default_q, command, last_action)
+                action = actor(obs)
+                last_action = action.numpy().squeeze()
+                target_q = a2tq.action_to_target_q(last_action, default_q)
+
+            if(step_counter < 1000):
+                data.ctrl[:] = default_q
+            else:
+                data.ctrl[:] = target_q          # 假设 XML 中 actuator 是 position 类型
+            mujoco.mj_step(model, data)
+            step_counter += 1
+            viewer.sync()

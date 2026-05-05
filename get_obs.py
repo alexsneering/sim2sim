@@ -32,53 +32,60 @@ def get_joint_vel(data):
     qd = data.qvel[6:]
     return uniform_noise(qd, -1.5, 1.5)
 
-def get_height_scan(data, model, n_points=20, radius=0.3):
+def get_height_scan(data, model, body_id = 1):
+    """
+    模拟 Isaac 的 GridPattern 高度扫描：
+    在 base 坐标系下，x∈[-0.8, 0.8], y∈[-0.5, 0.5]，步长 0.1
+    共 17×11=187 个点。
+    """
+    # 网格参数（与 Isaac 一致）
+    x_range = (-0.8, 0.8)
+    y_range = (-0.5, 0.5)
+    resolution = 0.1
+    nx = int((x_range[1] - x_range[0]) / resolution) + 1   # =17
+    ny = int((y_range[1] - y_range[0]) / resolution) + 1   # =11
+
+    # base 状态
+    base_pos = data.xpos[body_id].copy()
+    base_mat = data.xmat[body_id].reshape(3, 3)
+
     heights = []
+    for i in range(nx):
+        for j in range(ny):
+            # 局部坐标偏移
+            local_offset = np.array([
+                x_range[0] + i * resolution,
+                y_range[0] + j * resolution,
+                0.0
+            ])
+            # 转到世界坐标
+            world_offset = base_mat @ local_offset
+            ray_start = base_pos + world_offset
+            ray_dir = np.array([0.0, 0.0, -1.0])   # 世界坐标系向下
 
-    base_pos = data.xpos[1].copy()  # base
+            geomid = np.array([-1], dtype=np.int32)
+            dist = mujoco.mj_ray(
+                model, data,
+                ray_start, ray_dir,
+                None,       # geomgroup
+                1,          # flg_static
+                -1,         # bodyexclude
+                geomid
+            )
 
-    for i in range(n_points):
-        angle = 2 * np.pi * i / n_points
+            if geomid[0] == -1:
+                h = 0.0
+            else:
+                h = dist          # 直接使用射线距离
 
-        offset = np.array([
-            radius * np.cos(angle),
-            radius * np.sin(angle),
-            0.0
-        ])
+            heights.append(h)
 
-        ray_start = base_pos + offset
-        ray_dir = np.array([0.0, 0.0, -1.0])
+    heights = np.array(heights, dtype=np.float32)    # shape (187,)
 
-        # === 关键：创建输出容器 ===
-        geomid = np.array([-1], dtype=np.int32)
-
-        # === 调用 mj_ray ===
-        dist = mujoco.mj_ray(
-            model,
-            data,
-            ray_start,
-            ray_dir,
-            None,      # geomgroup
-            1,         # flg_static
-            -1,        # bodyexclude
-            geomid     # 输出 geom id
-        )
-
-        # === 计算高度 ===
-        if geomid[0] == -1:
-            h = 0.0
-        else:
-            h = dist   # MuJoCo 返回的是距离！
-
-        heights.append(h)
-
-    heights = np.array(heights)
-
-    # clip（和 Isaac 一样）
-    #heights = np.clip(heights, -1.0, 1.0)
-    height_scan = np.zeros(20)
-
-    return height_scan
+    # 与 Isaac 对齐：clip 到 [-1, 1]
+    heights = np.clip(heights, -1.0, 1.0)
+    print(heights[:5])
+    return heights
 
 def get_obs(data, model, default_q, command, last_action):
     obs = np.concatenate([
@@ -91,7 +98,7 @@ def get_obs(data, model, default_q, command, last_action):
         last_action,
         get_height_scan(data, model)
     ])
-    obs = np.pad(obs, (0, 235 - 68), mode='constant')
+    #obs = np.pad(obs, (0, 235 - 68), mode='constant')
     obs_tensor = torch.from_numpy(obs).float().unsqueeze(0)  # 升维成 [1,235] 匹配网络输入
 
     return obs_tensor
